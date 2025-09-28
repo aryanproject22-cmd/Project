@@ -27,7 +27,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // MongoDB connection status endpoint
-app.get('/api/mongo-status', (req, res) => {
+app.get('/api/mongo', (req, res) => {
   res.status(200).json({ mongoStatus });
 });
 
