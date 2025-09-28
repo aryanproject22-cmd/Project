@@ -13,6 +13,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.GEMINI_API_KEY;
 
+// Global variable to track database connection status
+let isDatabaseConnected = false;
+
 // Database connection function
 const connectDB = async () => {
     try {
@@ -21,7 +24,24 @@ const connectDB = async () => {
             console.warn('⚠️ MONGO_URI environment variable is not set. Database features will be disabled.');
             return false;
         }
-        await mongoose.connect(mongoUri);
+        
+        // Check if already connected
+        if (mongoose.connection.readyState === 1) {
+            console.log('✅ MongoDB Already Connected');
+            return true;
+        }
+        
+        // For serverless environments, use connection pooling
+        await mongoose.connect(mongoUri, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            maxPoolSize: 10,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
+            bufferCommands: false,
+            bufferMaxEntries: 0
+        });
+        
         console.log('✅ MongoDB Connected Successfully');
         return true;
     } catch (error) {
@@ -29,6 +49,15 @@ const connectDB = async () => {
         console.warn('⚠️ Continuing without database connection...');
         return false;
     }
+};
+
+// Ensure database connection for each request
+const ensureDBConnection = async () => {
+    if (!isDatabaseConnected) {
+        console.log('🔄 Attempting to connect to database...');
+        isDatabaseConnected = await connectDB();
+    }
+    return isDatabaseConnected;
 };
 
 // Using Gemini 2.5 Flash Lite model
@@ -72,6 +101,17 @@ app.use(express.text());
 // --- Health Check Endpoint ---
 app.get("/api/health", (req, res) => {
   res.status(200).json({ status: "healthy", timestamp: new Date().toISOString() });
+});
+
+// --- Database Status Endpoint ---
+app.get("/api/db-status", async (req, res) => {
+  const dbConnected = await ensureDBConnection();
+  res.status(200).json({ 
+    database_connected: dbConnected,
+    mongoose_state: mongoose.connection.readyState,
+    mongo_uri_set: !!process.env.MONGO_URI,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // --- Optional Root Route ---
@@ -185,8 +225,11 @@ app.post("/generate-notes", upload.fields([
       generated_notes: generatedNotes
     };
 
+    // Ensure database connection
+    const dbConnected = await ensureDBConnection();
+    
     // Save notes to database (if connected)
-    if (isDatabaseConnected) {
+    if (dbConnected) {
       try {
         const savedNote = await saveNotes(noteData);
         
@@ -231,8 +274,9 @@ app.post("/generate-notes", upload.fields([
 });
 
 // --- Notes Management Routes ---
-app.use("/api/notes", (req, res, next) => {
-  if (!isDatabaseConnected) {
+app.use("/api/notes", async (req, res, next) => {
+  const dbConnected = await ensureDBConnection();
+  if (!dbConnected) {
     return res.status(503).json({
       status: "error",
       message: "Database not connected. Notes management unavailable."
@@ -240,9 +284,6 @@ app.use("/api/notes", (req, res, next) => {
   }
   next();
 }, notesRoutes);
-
-// Global variable to track database connection status
-let isDatabaseConnected = false;
 
 // --- Start Server ---
 const startServer = async () => {
