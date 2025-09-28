@@ -6,6 +6,7 @@ const multer = require("multer");
 const mongoose = require("mongoose");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { saveNotes, getAllNotes, getNoteById, deleteNote } = require("./controllers/noteController");
+const SYSTEM_INSTRUCTION = require("./config/systemInstruction");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -31,15 +32,6 @@ const connectDB = async () => {
 
 // Using Gemini 2.5 Flash Lite model
 const GEMINI_MODEL = "gemini-2.5-flash-lite";
-
-// System instruction for structured academic notes
-const SYSTEM_INSTRUCTION = `You are an expert academic tutor and professional note-maker. Your task is to take brief, simple, or incomplete notes and transform them into a comprehensive, well-structured, and easy-to-read study guide suitable for a university student. 
-The output MUST include:
-1. A clear, concise Title.
-2. An Introduction (1-2 sentences).
-3. The main content organized with bolded Level 2 Headings (## Heading), bullet points, and numbered lists where appropriate.
-4. Key Definitions highlighted at the end.
-Do not include any preamble, just start with the Title.`;
 
 if (!API_KEY) {
   console.error("FATAL: GEMINI_API_KEY not found in .env file.");
