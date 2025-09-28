@@ -1,0 +1,59 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+*.venv
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# VS Code
+.vscode/
+.history/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Compiled files
+*.class
+*.o
+*.so
+*.exe
+*.dll
+
+# Package distribution
+*.tgz
+*.tar.gz
+
+# Coverage reports
+coverage/
+*.cover
+*.coverage
+*.lcov
+
+# Misc
+*.swp
+*.swo
+.idea/
+*.bak
+*.tmp
