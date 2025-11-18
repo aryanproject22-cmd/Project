@@ -872,6 +872,50 @@ app.post("/generate-notes", upload.fields([
         ]
       };
       
+      // Create a focused, formatted excerpt from the raw text to improve subject detection.
+      // The goal is to surface titles, headings, math/formula lines and other high-signal lines
+      // so the model and heuristics see the most relevant parts first.
+      const formatForSubjectDetection = (raw) => {
+        if (!raw || typeof raw !== "string") return "";
+        const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0) return "";
+
+        // Title: first non-empty short line
+        const title = lines.find(l => l.length > 0 && l.length < 120) || lines[0];
+
+        // Headings: lines that look like headings (markdown hashes) or ALL CAPS short lines
+        const headings = lines.filter(l => /^#+\s+/.test(l) || (l === l.toUpperCase() && l.split(' ').length < 8));
+
+        // Math/formula indicators (LaTeX tokens, common math words, operators)
+        const mathRegexStr = '\\\\frac|\\\\sum|\\\\int|\\\\sqrt|\\\\theta|\\\\alpha|\\\\beta|\\d+\\\\s*=|\\\\bderivative\\\\b|\\^|sin\\\\(|cos\\\\(|tan\\\\(|lim\\\\b|=>|<=|>=';
+        const mathRegex = new RegExp(mathRegexStr, 'i');
+        const mathLines = lines.filter(l => mathRegex.test(l));
+
+        // Unit / physics/chemistry cues
+        const unitRegex = new RegExp('\\b(m|cm|mm|kg|g|mol|N|Pa|J|W|Hz|K|ppm)\\b');
+        const unitLines = lines.filter(l => unitRegex.test(l));
+
+        // Keyword-rich lines (definitions, theorems, algorithms, reactions, etc.)
+        const signalRegex = new RegExp('\\b(definition|theorem|proof|lemma|example|algorithm|reaction|synthesis|transcript|transcription|study guide|exercise|solution|procedure)\\b', 'i');
+        const signalLines = lines.filter(l => signalRegex.test(l));
+
+        // Take the beginning of the document (first 60 lines) as context
+        const headLines = lines.slice(0, 60);
+
+        // Compose prioritized excerpt: title, headings, math, units, signals, then head
+        const excerptParts = [];
+        if (title) excerptParts.push(title);
+        if (headings.length) excerptParts.push(...headings.slice(0, 6));
+        if (mathLines.length) excerptParts.push(...mathLines.slice(0, 12));
+        if (unitLines.length) excerptParts.push(...unitLines.slice(0, 8));
+        if (signalLines.length) excerptParts.push(...signalLines.slice(0, 10));
+        excerptParts.push(...headLines);
+
+        const composed = excerptParts.join("\n").replace(/["“”‘’]/g, '').trim();
+        // Limit to a reasonable length for model input
+        return composed.length > 4000 ? composed.substring(0, 4000) : composed;
+      };
+      
       
 
       const normalizeDetected = (raw) => {
@@ -883,21 +927,23 @@ app.post("/generate-notes", upload.fields([
       };
 
       try {
-        // Give the model more context if available (increase substring length)
-        const snippet = (text && text.length > 0) ? text.substring(0, 2000) : "";
+        // Pre-format the raw text to surface the highest-signal lines for subject detection.
+        const formattedSnippet = formatForSubjectDetection(text);
+        const modelInput = formattedSnippet && formattedSnippet.length > 0 ? formattedSnippet : (text && text.length > 0 ? text.substring(0, 2000) : "");
+        const allowedList = allowedSubjects.map(s => `"${s}"`).join(", ");
         const subjectResult = await model.generateContent({
           contents: [{ 
             role: "user", 
             parts: [{ 
-              text: `Analyze this text and identify the single most appropriate academic subject it belongs to. Reply with ONLY one of these exact subjects (case-insensitive match will be accepted): ${allowedSubjects.map(s=>`"${s}"`).join(", ")}. Do not add any other text or explanation.
+              text: `Analyze this excerpt (pre-formatted to surface titles, headings and formulas) and identify the single most appropriate academic subject it belongs to. Reply with ONLY one of these exact subjects (case-insensitive match will be accepted): ${allowedList}. Do not add any other text or explanation.
 
-Text to analyze:
-"${snippet}"`
+Excerpt:
+"${modelInput}"`
             }] 
           }],
           generationConfig: {
             temperature: 0.0,
-            maxOutputTokens: 30,
+            maxOutputTokens: 40,
           },
         });
 
@@ -1116,6 +1162,116 @@ Generate detailed, organized academic notes in ${detectedLanguage} language only
 
     // Ensure we store the language as the target language (English when unknown)
     detectedLanguage = targetLanguage;
+
+    // --- Post-generation subject re-check & override ---
+    // Re-evaluate the subject using the generated notes + original content and prefer the stronger signal.
+    const postDetectSubject = (generatedText, originalContent, currentSubject) => {
+      try {
+        const allowedSubjects = [
+          "Mathematics","Physics","Chemistry","Biology","Programming",
+          "Computer Science","History","Geography","Literature","Language",
+          "Art","Music","Sports","Entertainment","General"
+        ];
+
+        const synonyms = {
+          "computer science": "Computer Science",
+          "cs": "Computer Science",
+          "coding": "Programming",
+          "programming": "Programming",
+          "math": "Mathematics",
+          "mathematics": "Mathematics",
+          "physics": "Physics",
+          "chemistry": "Chemistry",
+          "biology": "Biology",
+          "history": "History",
+          "geography": "Geography",
+          "literature": "Literature",
+          "language": "Language",
+          "linguistics": "Language",
+          "art": "Art",
+          "music": "Music",
+          "sports": "Sports",
+          "sport": "Sports",
+          "entertainment": "Entertainment",
+          "general": "General"
+        };
+
+        const smallKeywordMap = {
+          "Sports": [
+            "player","team","coach","tournament","match","score","goal","stadium",
+            "athlete","training","league","referee","offense","defense","marathon",
+            "sprint","competition","fitness","game","scoreboard","coach"
+          ],
+          "Programming": ["function","variable","algorithm","code","compile","runtime","bug","debug","array","json","api","javascript","python","java"],
+          "Mathematics": ["integral","derivative","calculus","algebra","matrix","theorem","probability","statistics","geometry","trigonometry"],
+          "Physics": ["force","quantum","relativity","momentum","energy","velocity","gravity","entropy","thermodynamics","optics"],
+          "Chemistry": ["molecule","reaction","atom","bond","ph","catalyst","organic","inorganic","stoichiometry","spectroscopy"],
+          "Biology": ["cell","dna","genome","protein","photosynthesis","mitosis","meiosis","enzyme","organism","ecology"],
+          "History": ["war","empire","revolution","ancient","medieval","dynasty","treaty","colonial","civilization"],
+          "Geography": ["continent","country","climate","latitude","longitude","topography","river","mountain","ocean","map"],
+          "Literature": ["novel","poem","poetry","character","narrative","prose","metaphor","plot","drama","genre"],
+          "Language": ["grammar","vocabulary","syntax","linguistics","translation","phonetics","morphology","semantics"],
+          "Art": ["painting","sculpture","canvas","gallery","museum","aesthetics","portrait","landscape"],
+          "Music": ["melody","harmony","rhythm","instrument","composer","song","pitch","tempo"],
+          "Entertainment": ["movie","film","television","celebrity","series","episode","director","actor","script"]
+        };
+
+        const getTextForAnalysis = () => {
+          const g = generatedText || "";
+          const o = (typeof originalContent === 'string') ? originalContent : (originalContent && originalContent.originalname ? originalContent.originalname : "");
+          return (g + "\n" + o).toLowerCase();
+        };
+
+        const text = getTextForAnalysis();
+        if (!text || text.trim().length === 0) return currentSubject;
+
+        // 1) Direct allowed-subject mention (strong signal)
+        for (const s of allowedSubjects) {
+          if (text.includes(s.toLowerCase())) return s;
+        }
+
+        // 2) Synonym mention
+        for (const [k, v] of Object.entries(synonyms)) {
+          if (text.includes(k)) return v;
+        }
+
+        // 3) Heuristic keyword scoring across smallKeywordMap
+        const scores = {};
+        for (const [subject, kws] of Object.entries(smallKeywordMap)) {
+          scores[subject] = 0;
+          for (const kw of kws) {
+            if (kw && text.includes(kw)) scores[subject] += 1;
+          }
+        }
+
+        const sorted = Object.entries(scores).sort((a,b) => b[1] - a[1]);
+        const top = sorted[0] || [null, 0];
+        const second = sorted[1] || [null, 0];
+
+        // Strong heuristic: top has at least 3 matches and is ahead of second by >=2
+        if (top[1] >= 3 && (top[1] - (second[1] || 0) >= 2)) {
+          return top[0];
+        }
+
+        // Sports is common and can be decided with a lower threshold if several keywords appear
+        if (scores["Sports"] >= 2) return "Sports";
+
+        return currentSubject;
+      } catch (err) {
+        console.warn("Post-generation subject re-check failed:", err && err.message ? err.message : err);
+        return currentSubject;
+      }
+    };
+
+    try {
+      const overridden = postDetectSubject(generatedNotes, content, detectedSubject);
+      if (overridden && overridden !== detectedSubject) {
+        console.log("Post-generation subject override triggered. Previous subject:", detectedSubject, "-> New subject:", overridden);
+        detectedSubject = overridden;
+      }
+    } catch (e) {
+      console.warn("Error during post-generation subject override:", e && e.message ? e.message : e);
+    }
 
     // Prepare data for saving to database
     const noteData = {
